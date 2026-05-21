@@ -1,52 +1,124 @@
-import telebot
-from flask import Flask, request
-import os
-import sys
 import time
+from pip._internal.cli.main import main
+
+try:
+    import lxml
+except ModuleNotFoundError:
+    main(["install", "-U", "lxml>=5.3.0"])
+except:
+    pass
+try:
+    import bcrypt
+except ModuleNotFoundError:
+    main(["install", "-U", "bcrypt>=4.2.0"])
+except:
+    pass
+try:
+    import socks
+except ModuleNotFoundError:
+    main(["install", "-U", "pysocks>=1.7.1"])
+except:
+    pass
+import Utils.cardinal_tools
+import Utils.config_loader as cfg_loader
+from first_setup import first_setup
+from colorama import Fore, Style
+from Utils.logger import LOGGER_CONFIG
+import logging.config
+import colorama
+import sys
+import os
 from cardinal import Cardinal
+import Utils.exceptions as excs
+from locales.localizer import Localizer
 
-# ===== ПЕРЕМЕННЫЕ =====
-BOT_TOKEN = os.environ.get('BOT_TOKEN')
-ADMIN_ID = os.environ.get('ADMIN_ID')
-GOLDEN_KEY = os.environ.get('GOLDEN_KEY')
+VERSION = "0.1.17.7"
 
-bot = telebot.TeleBot(BOT_TOKEN)
+Utils.cardinal_tools.set_console_title(f"FunPay Cardinal v{VERSION}")
 
-# ===== ВЕБ-СЕРВЕР ДЛЯ RENDER =====
-flask_app = Flask(__name__)
+if getattr(sys, 'frozen', False):
+    os.chdir(os.path.dirname(sys.executable))
+else:
+    os.chdir(os.path.dirname(__file__))
 
-@flask_app.route('/webhook', methods=['POST'])
-def webhook():
-    if request.headers.get('content-type') == 'application/json':
-        json_string = request.get_data().decode('utf-8')
-        update = telebot.types.Update.de_json(json_string)
-        bot.process_new_updates([update])
-        return 'OK', 200
-    return 'Bad Request', 400
+folders = ["configs", "logs", "storage", "storage/cache", "storage/plugins", "storage/products", "plugins"]
+for i in folders:
+    if not os.path.exists(i):
+        os.makedirs(i)
 
-@flask_app.route('/health')
-def health():
-    return 'OK', 200
+files = ["configs/auto_delivery.cfg", "configs/auto_response.cfg"]
+for i in files:
+    if not os.path.exists(i):
+        with open(i, "w", encoding="utf-8") as f:
+            ...
 
-# ===== ТВОЙ ОСНОВНОЙ КОД БОТА (ВСЕ ОБРАБОТЧИКИ) =====
-# СЮДА ВСТАВЬ ВСЕ СВОИ @bot.message_handler И ДРУГИЕ ФУНКЦИИ
-# Например:
+colorama.init()
 
-@bot.message_handler(commands=['start'])
-def start_command(message):
-    if str(message.chat.id) == ADMIN_ID:
-        bot.reply_to(message, "✅ Бот запущен и работает через Webhook!")
+logging.config.dictConfig(LOGGER_CONFIG)
+logging.raiseExceptions = False
+logger = logging.getLogger("main")
 
-# ... добавь сюда все остальные свои обработчики ...
+print(f"{Style.RESET_ALL}{logo}")
+print(f"{Fore.RED}{Style.BRIGHT}v{VERSION}{Style.RESET_ALL}\n")
+print(f"{Fore.MAGENTA}{Style.BRIGHT}By {Fore.BLUE}{Style.BRIGHT}Woopertail, @sidor0912{Style.RESET_ALL}")
+print(f"{Fore.MAGENTA}{Style.BRIGHT} * GitHub: {Fore.BLUE}{Style.BRIGHT}github.com/sidor0912/FunPayCardinal{Style.RESET_ALL}")
+print(f"{Fore.MAGENTA}{Style.BRIGHT} * Telegram: {Fore.BLUE}{Style.BRIGHT}t.me/sidor0912")
+print(f"{Fore.MAGENTA}{Style.BRIGHT} * Новости о обновлениях: {Fore.BLUE}{Style.BRIGHT}t.me/fpc_updates")
+print(f"{Fore.MAGENTA}{Style.BRIGHT} * Плагины: {Fore.BLUE}{Style.BRIGHT}t.me/fpc_plugins")
+print(f"{Fore.MAGENTA}{Style.BRIGHT} * Донат: {Fore.BLUE}{Style.BRIGHT}t.me/sidor_donate")
+print(f"{Fore.MAGENTA}{Style.BRIGHT} * Telegram-чат: {Fore.BLUE}{Style.BRIGHT}t.me/funpay_cardinal")
 
-# ===== ЗАПУСК =====
-if __name__ == '__main__':
-    # Удаляем старый webhook и ставим новый
-    webhook_url = f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME', 'localhost')}/webhook"
-    bot.remove_webhook()
-    bot.set_webhook(url=webhook_url)
-    print(f"Webhook установлен: {webhook_url}")
-    
-    # Запускаем веб-сервер
-    port = int(os.environ.get('PORT', 10000))
-    flask_app.run(host='0.0.0.0', port=port)
+if not os.path.exists("configs/_main.cfg"):
+    first_setup()
+    sys.exit()
+
+if sys.platform == "linux" and os.getenv('FPC_IS_RUNNIG_AS_SERVICE', '0') == '1':
+    import getpass
+    pid = str(os.getpid())
+    pidFile = open(f"/run/FunPayCardinal/{getpass.getuser()}/FunPayCardinal.pid", "w")
+    pidFile.write(pid)
+    pidFile.close()
+    logger.info(f"$GREENPID файл создан, PID процесса: {pid}")
+
+try:
+    logger.info("$MAGENTAЗагружаю конфиг _main.cfg...")
+    MAIN_CFG = cfg_loader.load_main_config("configs/_main.cfg")
+    localizer = Localizer(MAIN_CFG["Other"]["language"])
+    _ = localizer.translate
+
+    logger.info("$MAGENTAЗагружаю конфиг auto_response.cfg...")
+    AR_CFG = cfg_loader.load_auto_response_config("configs/auto_response.cfg")
+    RAW_AR_CFG = cfg_loader.load_raw_auto_response_config("configs/auto_response.cfg")
+
+    logger.info("$MAGENTAЗагружаю конфиг auto_delivery.cfg...")
+    AD_CFG = cfg_loader.load_auto_delivery_config("configs/auto_delivery.cfg")
+except excs.ConfigParseError as e:
+    logger.error(e)
+    logger.error("Завершаю программу...")
+    time.sleep(5)
+    sys.exit()
+except UnicodeDecodeError:
+    logger.error("Произошла ошибка при расшифровке UTF-8. Убедитесь, что кодировка файла = UTF-8, а формат конца строк = LF.")
+    logger.error("Завершаю программу...")
+    time.sleep(5)
+    sys.exit()
+except:
+    logger.critical("Произошла непредвиденная ошибка.")
+    logger.warning("TRACEBACK", exc_info=True)
+    logger.error("Завершаю программу...")
+    time.sleep(5)
+    sys.exit()
+
+localizer = Localizer(MAIN_CFG["Other"]["language"])
+
+try:
+    Cardinal(MAIN_CFG, AD_CFG, AR_CFG, RAW_AR_CFG, VERSION).init().run()
+except KeyboardInterrupt:
+    logger.info("Завершаю программу...")
+    sys.exit()
+except:
+    logger.critical("При работе Кардинала произошла необработанная ошибка.")
+    logger.warning("TRACEBACK", exc_info=True)
+    logger.critical("Завершаю программу...")
+    time.sleep(5)
+    sys.exit()
