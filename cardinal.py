@@ -685,6 +685,27 @@ class Cardinal(object):
         return self
 
     def run(self):
+        # ===== НАЧАЛО ВСТАВКИ (веб-сервер для Render) =====
+        try:
+            from flask import Flask
+            import os
+            
+            web_app = Flask(__name__)
+            
+            @web_app.route('/')
+            def health():
+                return "OK", 200
+            
+            def run_web():
+                port = int(os.environ.get('PORT', 10000))
+                web_app.run(host='0.0.0.0', port=port)
+            
+            Thread(target=run_web, daemon=True).start()
+            logger.info("Web-сервер для Render запущен")
+        except ImportError:
+            logger.warning("Flask не установлен, веб-сервер не запущен")
+        # ===== КОНЕЦ ВСТАВКИ =====
+
         """
         Запускает кардинал после инициализации. Используется для первого старта.
         """
@@ -747,265 +768,4 @@ class Cardinal(object):
 
     # Загрузка плагинов
     @staticmethod
-    def is_uuid_valid(uuid: str) -> bool:
-        """
-        Проверяет, является ли UUID плагина валидным.
-        :param uuid: UUID4.
-        """
-        try:
-            uuid_obj = UUID(uuid, version=4)
-        except ValueError:
-            return False
-        return str(uuid_obj) == uuid
-
-    @staticmethod
-    def is_plugin(file: str) -> bool:
-        """
-        Есть ли "noplug" в начале файла плагина?
-
-        :param file: файл плагина.
-        """
-        with open(f"plugins/{file}", "r", encoding="utf-8") as f:
-            line = f.readline()
-        if line.startswith("#"):
-            line = line.replace("\n", "")
-            args = line.split()
-            if "noplug" in args:
-                return False
-        return True
-
-    @staticmethod
-    def load_plugin(from_file: str) -> tuple:
-        """
-        Создает модуль из переданного файла-плагина и получает необходимые поля для PluginData.
-        :param from_file: путь до файла-плагина.
-
-        :return: плагин, поля плагина.
-        """
-        spec = importlib.util.spec_from_file_location(f"plugins.{from_file[:-3]}", f"plugins/{from_file}")
-        plugin = importlib.util.module_from_spec(spec)
-        sys.modules[f"plugins.{from_file[:-3]}"] = plugin
-        spec.loader.exec_module(plugin)
-
-        fields = ["NAME", "VERSION", "DESCRIPTION", "CREDITS", "SETTINGS_PAGE", "UUID", "BIND_TO_DELETE"]
-        result = {}
-
-        for i in fields:
-            try:
-                value = getattr(plugin, i)
-            except AttributeError:
-                raise Utils.exceptions.FieldNotExistsError(i, from_file)
-            result[i] = value
-        return plugin, result
-
-    def load_plugins(self):
-        """
-        Импортирует все плагины из папки plugins.
-        """
-        if not os.path.exists("plugins"):
-            logger.warning(_("crd_no_plugins_folder"))
-            return
-        plugins = [file for file in os.listdir("plugins") if file.endswith(".py")]
-        if not plugins:
-            logger.info(_("crd_no_plugins"))
-            return
-
-        sys.path.append("plugins")
-        for file in plugins:
-            try:
-                if not self.is_plugin(file):
-                    continue
-                plugin, data = self.load_plugin(file)
-            except:
-                logger.error(_("crd_plugin_load_err", file))
-                logger.debug("TRACEBACK", exc_info=True)
-                continue
-
-            if not self.is_uuid_valid(data["UUID"]):
-                logger.error(_("crd_invalid_uuid", file))
-                continue
-
-            if data["UUID"] in self.plugins:
-                logger.error(_("crd_uuid_already_registered", data['UUID'], data['NAME']))
-                continue
-
-            plugin_data = PluginData(data["NAME"], data["VERSION"], data["DESCRIPTION"], data["CREDITS"], data["UUID"],
-                                     f"plugins/{file}", plugin, data["SETTINGS_PAGE"], data["BIND_TO_DELETE"],
-                                     False if data["UUID"] in self.disabled_plugins else True,
-                                     True if data["UUID"] in self.pinned_plugins else False)
-
-            self.plugins[data["UUID"]] = plugin_data
-
-    def add_handlers_from_plugin(self, plugin, uuid: str | None = None):
-        """
-        Добавляет хэндлеры из плагина + присваивает каждому хэндлеру UUID плагина.
-
-        :param plugin: модуль (плагин).
-        :param uuid: UUID плагина (None для встроенных хэндлеров).
-        """
-        for name in self.handler_bind_var_names:
-            try:
-                functions = getattr(plugin, name)
-            except AttributeError:
-                continue
-            for func in functions:
-                func.plugin_uuid = uuid
-            self.handler_bind_var_names[name].extend(functions)
-        logger.info(_("crd_handlers_registered", plugin.__name__))
-
-    def add_handlers(self):
-        """
-        Регистрирует хэндлеры из всех плагинов.
-        """
-        for i in self.plugins:
-            plugin = self.plugins[i].plugin
-            self.add_handlers_from_plugin(plugin, i)
-
-    def run_handlers(self, handlers_list: list[Callable], args) -> None:
-        """
-        Выполняет функции из списка handlers.
-
-        :param handlers_list: Список хэндлеров.
-        :param args: аргументы для хэндлеров.
-        """
-        for func in handlers_list:
-            try:
-                plugin_uuid = getattr(func, "plugin_uuid")
-                if plugin_uuid is None or (plugin_uuid in self.plugins and self.plugins[plugin_uuid].enabled):
-                    func(*args)
-            except Exception as ex:
-                text = _("crd_handler_err")
-                try:
-                    text += f" {ex.short_str()}"
-                except:
-                    pass
-                logger.error(text)
-                logger.debug("TRACEBACK", exc_info=True)
-
-    def add_telegram_commands(self, uuid: str, commands: list[tuple[str, str, bool]]):
-        """
-        Добавляет команды в список команд плагина.
-        [
-            ("команда1", "описание команды", Добавлять ли в меню команд (True / False)),
-            ("команда2", "описание команды", Добавлять ли в меню команд (True / False))
-        ]
-
-        :param uuid: UUID плагина.
-        :param commands: список команд (без "/")
-        """
-        if uuid not in self.plugins:
-            return
-
-        for i in commands:
-            self.plugins[uuid].commands[i[0]] = i[1]
-            if i[2] and self.telegram:
-                self.telegram.add_command_to_menu(i[0], i[1])
-
-    def toggle_plugin(self, uuid):
-        """
-        Активирует / деактивирует плагин.
-        :param uuid: UUID плагина.
-        """
-        self.plugins[uuid].enabled = not self.plugins[uuid].enabled
-        if self.plugins[uuid].enabled and uuid in self.disabled_plugins:
-            self.disabled_plugins.remove(uuid)
-        elif not self.plugins[uuid].enabled and uuid not in self.disabled_plugins:
-            self.disabled_plugins.append(uuid)
-        cardinal_tools.cache_disabled_plugins(self.disabled_plugins)
-
-    def pin_plugin(self, uuid):
-        """
-        Закрепляет / открепляет плагин в списке плагинов.
-        :param uuid: UUID плагина.
-        """
-        self.plugins[uuid].pinned = not self.plugins[uuid].pinned
-        if not self.plugins[uuid].pinned and uuid in self.pinned_plugins:
-            self.pinned_plugins.remove(uuid)
-        elif self.plugins[uuid].pinned and uuid not in self.pinned_plugins:
-            self.pinned_plugins.append(uuid)
-        cardinal_tools.cache_pinned_plugins(self.pinned_plugins)
-
-    # Настройки
-    @property
-    def autoraise_enabled(self) -> bool:
-        return self.MAIN_CFG["FunPay"].getboolean("autoRaise")
-
-    @property
-    def autoresponse_enabled(self) -> bool:
-        return self.MAIN_CFG["FunPay"].getboolean("autoResponse")
-
-    @property
-    def autodelivery_enabled(self) -> bool:
-        return self.MAIN_CFG["FunPay"].getboolean("autoDelivery")
-
-    @property
-    def multidelivery_enabled(self) -> bool:
-        return self.MAIN_CFG["FunPay"].getboolean("multiDelivery")
-
-    @property
-    def autorestore_enabled(self) -> bool:
-        return self.MAIN_CFG["FunPay"].getboolean("autoRestore")
-
-    @property
-    def autodisable_enabled(self) -> bool:
-        return self.MAIN_CFG["FunPay"].getboolean("autoDisable")
-
-    @property
-    def old_mode_enabled(self) -> bool:
-        return self.MAIN_CFG["FunPay"].getboolean("oldMsgGetMode")
-
-    @property
-    def keep_sent_messages_unread(self) -> bool:
-        return self.MAIN_CFG["FunPay"].getboolean("keepSentMessagesUnread")
-
-    @property
-    def show_image_name(self) -> bool:
-        return self.MAIN_CFG["NewMessageView"].getboolean("showImageName")
-
-    @property
-    def bl_delivery_enabled(self) -> bool:
-        return self.MAIN_CFG["BlockList"].getboolean("blockDelivery")
-
-    @property
-    def bl_response_enabled(self) -> bool:
-        return self.MAIN_CFG["BlockList"].getboolean("blockResponse")
-
-    @property
-    def bl_msg_notification_enabled(self) -> bool:
-        return self.MAIN_CFG["BlockList"].getboolean("blockNewMessageNotification")
-
-    @property
-    def bl_order_notification_enabled(self) -> bool:
-        return self.MAIN_CFG["BlockList"].getboolean("blockNewOrderNotification")
-
-    @property
-    def bl_cmd_notification_enabled(self) -> bool:
-        return self.MAIN_CFG["BlockList"].getboolean("blockCommandNotification")
-
-    @property
-    def include_my_msg_enabled(self) -> bool:
-        return self.MAIN_CFG["NewMessageView"].getboolean("includeMyMessages")
-
-    @property
-    def include_fp_msg_enabled(self) -> bool:
-        return self.MAIN_CFG["NewMessageView"].getboolean("includeFPMessages")
-
-    @property
-    def include_bot_msg_enabled(self) -> bool:
-        return self.MAIN_CFG["NewMessageView"].getboolean("includeBotMessages")
-
-    @property
-    def only_my_msg_enabled(self) -> bool:
-        return self.MAIN_CFG["NewMessageView"].getboolean("notifyOnlyMyMessages")
-
-    @property
-    def only_fp_msg_enabled(self) -> bool:
-        return self.MAIN_CFG["NewMessageView"].getboolean("notifyOnlyFPMessages")
-
-    @property
-    def only_bot_msg_enabled(self) -> bool:
-        return self.MAIN_CFG["NewMessageView"].getboolean("notifyOnlyBotMessages")
-
-    @property
-    def block_tg_login(self) -> bool:
-        return self.MAIN_CFG["Telegram"].getboolean("blockLogin")
+    def is_uuid_valid(uuid:
