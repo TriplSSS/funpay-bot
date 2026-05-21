@@ -1,21 +1,21 @@
 import telebot
 from flask import Flask, request
-import threading
 import os
+import sys
 import time
 from cardinal import Cardinal
 
-# ===== НАСТРОЙКИ =====
+# ===== ПЕРЕМЕННЫЕ =====
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 ADMIN_ID = os.environ.get('ADMIN_ID')
 GOLDEN_KEY = os.environ.get('GOLDEN_KEY')
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# ===== ВЕБ-СЕРВЕР ДЛЯ WEBHOOK =====
-app = Flask(__name__)
+# ===== ВЕБ-СЕРВЕР ДЛЯ RENDER =====
+flask_app = Flask(__name__)
 
-@app.route('/webhook', methods=['POST'])
+@flask_app.route('/webhook', methods=['POST'])
 def webhook():
     if request.headers.get('content-type') == 'application/json':
         json_string = request.get_data().decode('utf-8')
@@ -24,21 +24,24 @@ def webhook():
         return 'OK', 200
     return 'Bad Request', 400
 
-@app.route('/health')
+@flask_app.route('/health')
 def health():
     return 'OK', 200
 
-# ===== ТВОИ ОБЫЧНЫЕ ОБРАБОТЧИКИ =====
+# ===== ТВОЙ ОСНОВНОЙ КОД БОТА (ВСЕ ОБРАБОТЧИКИ) =====
+# СЮДА ВСТАВЬ ВСЕ СВОИ @bot.message_handler И ДРУГИЕ ФУНКЦИИ
+# Например:
+
 @bot.message_handler(commands=['start'])
-def start(message):
+def start_command(message):
     if str(message.chat.id) == ADMIN_ID:
         bot.reply_to(message, "✅ Бот запущен и работает через Webhook!")
 
-# ... сюда добавь ВСЕ свои остальные обработчики (автовыдача, проверка и т.д.)
+# ... добавь сюда все остальные свои обработчики ...
 
 # ===== ЗАПУСК =====
 if __name__ == '__main__':
-    # Устанавливаем webhook
+    # Удаляем старый webhook и ставим новый
     webhook_url = f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME', 'localhost')}/webhook"
     bot.remove_webhook()
     bot.set_webhook(url=webhook_url)
@@ -46,4 +49,4 @@ if __name__ == '__main__':
     
     # Запускаем веб-сервер
     port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port)
+    flask_app.run(host='0.0.0.0', port=port)
